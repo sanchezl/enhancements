@@ -11,7 +11,6 @@ creation-date: 2021-02-01
 last-updated: 2021-02-01
 status: provisional
 ---
-
 # API Removal Notifications
 
 ## Release Signoff Checklist
@@ -53,6 +52,45 @@ Fire an `APIRemovedInNextReleaseInUse` alert when an API that will be removed in
 
 On EUS releases, also fire an `APIRemovedInNextEUSReleaseInUse` alert when an API that will be removed in the next
 extended support release is in use.
+
+Introduce a `DeprecatedAPIRequest` API to track users of deprecated APIs.
+
+Example:
+
+```yaml
+version: tbd/v1
+kind: DeprecatedAPIRequest
+meta-data:
+  name: 'flowschemas.flowcontrol.apiserver.k8s.io-v1alpha1'
+status:
+  removedRelease: '1.21'
+  conditions:
+    - type: UsedInPastDay
+      status: True
+  latest:
+    nodes:
+      - nodeName: master0
+        lastUpdate: '2020-01-02 05:00'
+        users:
+          - username: 'system:serviceaccount:openshift-cluster-version:default'
+            count: 10
+            requests:
+              - verb: get
+                count: 5
+              - verb: update
+                count: 3
+              - verb: delete
+                count: 2
+  previous:
+    nodes:
+      - nodename: master0
+        lastUpdate: '2020-01-02 00:00'
+        users:
+          - username: 'system:serviceaccount:openshift-network-operator:default'
+            ...
+      - nodename: master1
+        ...
+```
 
 ### User Stories
 
@@ -112,9 +150,99 @@ Value of `removed_release`:
 | 4.9               | 1.23            |                       |
 | 4.10 / 4.10 EUS   | 1.24            | TBD                   |
 
+#### DeprecatedAPIRequest Resource
+
+Patch the apiserver such that requests to a deprecated API are logged to a `DeprecatedAPIRequest` resource corresponding
+to the deprecated API. This resource can help customers determine which workloads are using deprecated APIs, including
+those which are a being removed in the next release.
+
+```go
+package v1
+
+import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+// DeprecatedAPIRequest tracts requests made to a deprecated API. The instance name should
+// be of the form `resource.group.version`, matching the deprecated resource.
+type DeprecatedAPIRequest struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty" protobuf:"bytes,1,opt,name=metadata"`
+
+	Status DeprecatedAPIRequestStatus `json:"status,omitempty"`
+}
+
+type DeprecatedAPIRequestStatus struct {
+
+	// RemovedRelease is when the API will be removed.
+	RemovedRelease string `json:"removedRelease"`
+
+	// Latest request history for the current hour. This is porcelain to make the API easier
+	// to read by humans seeing if they addressed a problem.
+	// +optional
+	Latest RequestLog `json:"latest"`
+
+	// Previous request history for the last 24 hours, indexed by the hour, so 12:00AM-12:59
+	// is in index 0, 6am-6:59am is index 6, etc..
+	// +optional
+	Previous []RequestLog `json:"previous"`
+
+	// Conditions contains details of the current status of this API Resource.
+	// +patchMergeKey=type
+	// +patchStrategy=merge
+	// +optional
+	Conditions []metav1.Condition
+}
+
+// RequestLog logs request for various nodes.
+type RequestLog struct {
+
+	// Nodes contains logs of requests per node.
+	Nodes []NodeRequestLog `json:"nodes"`
+}
+
+// NodeRequestLog contains logs of requests to a certain node.
+type NodeRequestLog struct {
+
+	// NodeName where the request are being handled.
+	NodeName string `json:"nodeName"`
+
+	// LastUpdate should *always* being within the hour this is for.  This is a time indicating
+	// the last moment the server is recording for, not the actual update time.
+	LastUpdate metav1.Time `json:"lastUpdate"`
+
+	// Users contains request details by username.
+	Users []RequestUser `json:"users"`
+}
+
+// RequestUser contains logs of a user's requests.
+type RequestUser struct {
+
+	// UserName that made the request.
+	UserName string `json:"username"`
+
+	// Count of requests.
+	Count int `json:"count"`
+
+	// Requests details by verb.
+	Requests []RequestCount `json:"requests"`
+}
+
+// RequestCount counts requests by verb.
+type RequestCount struct {
+
+	// Verb of request.
+	Verb string `json:"verb"`
+
+	// Count of requests for verb.
+	Count int `json:"count"`
+}
+
+```
+
 #### Determining Workload
 
-Documentation will be provided on how to use the audit logs to identify the workload using the API that will be removed.
+```sh
+oc get deprecatedapirequests --field-selector status.removedRelease=1.21
+```
 
 ### Risks and Mitigations
 
